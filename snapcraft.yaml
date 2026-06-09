@@ -1,0 +1,29 @@
+name: depicts
+base: core22
+version: '0.1.0'
+summary: Summarize a software project for AI context.
+description: |
+  A Python CLI tool that summarizes a software project by outputting a directory tree
+  and the contents of priority files. It helps provide instant context to AI assistants.
+
+grade: stable
+confinement: strict
+
+apps:
+  depicts:
+    command: bin/depicts
+    plugs:
+      - home
+      - removable-media
+      - x11
+      - wayland
+
+parts:
+  depicts:
+    plugin: python
+    source: .
+    python-packages:
+      - PyYAML
+    stage-packages:
+      - xclip
+      - xsel

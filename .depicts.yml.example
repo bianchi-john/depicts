@@ -1,0 +1,19 @@
+# Example configuration for depicts
+# Save this file as .depicts.yml in the root of your project to override default behavior.
+
+# Additional directories to exclude from the directory tree and file collection.
+# Default excludes include: .git, __pycache__, node_modules, .venv, dist, build, .idea, .vscode
+exclude_dirs:
+  - logs
+  - tmp
+  - coverage
+
+# The maximum number of lines to show for each priority file (default: 150).
+# Files under 200 lines are shown in full by default unless this is set lower.
+max_lines: 150
+
+# Extra files or glob patterns to always include in the output,
+# regardless of the detected stack.
+extra_files:
+  - "docs/architecture.md"
+  - "scripts/*.sh"
