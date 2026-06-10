@@ -69,61 +69,67 @@ def main():
         print(f"Error: Path '{root_path}' is not a directory.", file=sys.stderr)
         sys.exit(1)
         
-    # 1. Config Loading
-    config = load_config(
-        root_path=root_path,
-        cli_excludes=parsed_args.exclude,
-        cli_lines=parsed_args.lines,
-        cli_force_includes=parsed_args.file
-    )
-    
-    short_mode = parsed_args.short or parsed_args.no_content
-    full_mode = parsed_args.full
-    
-    # 2. Detect Stack
-    stack_name, priority_patterns = detect_stack(root_path)
-    
-    # 3. Collect Directory Tree
-    tree_lines, all_files = build_tree_and_files(root_path, config['excludes'])
-    if not tree_lines:
-        tree_lines = ["  (empty or inaccessible directory)"]
+    try:
+        # 1. Config Loading
+        config = load_config(
+            root_path=root_path,
+            cli_excludes=parsed_args.exclude,
+            cli_lines=parsed_args.lines,
+            cli_force_includes=parsed_args.file
+        )
         
-    # 4. Resolve Priority Files
-    resolved_files = resolve_priority_files(root_path, priority_patterns, config['force_includes'])
-    
-    # 5. Generate Summary
-    summary = generate_summary(all_files, resolved_files)
+        short_mode = parsed_args.short or parsed_args.no_content
+        full_mode = parsed_args.full
         
-    # 6. Collect File Contents
-    files_content = []
-    if not short_mode:
-        for filepath in resolved_files:
-            content = read_file_content(root_path, filepath, config['max_lines'], full_mode)
-            files_content.append((filepath, content))
+        # 2. Detect Stack
+        stack_name, priority_patterns = detect_stack(root_path)
+        
+        # 3. Collect Directory Tree
+        tree_lines, all_files = build_tree_and_files(root_path, config['excludes'])
+        if not tree_lines:
+            tree_lines = ["  (empty or inaccessible directory)"]
             
-    # 7. Format Output
-    formatter = FORMATTERS.get(parsed_args.format) or FORMATTERS['plain']
-    output_summary = None if short_mode else summary
-    output_text = formatter(stack_name, output_summary, tree_lines, files_content)
-    
-    # 8. Route Output
-    if parsed_args.clipboard:
-        success = copy_to_clipboard(output_text)
-        if success:
-            print("Output copied to clipboard.")
+        # 4. Resolve Priority Files
+        resolved_files = resolve_priority_files(root_path, priority_patterns, config['force_includes'])
+        
+        # 5. Generate Summary
+        summary = generate_summary(all_files, resolved_files)
+            
+        # 6. Collect File Contents
+        files_content = []
+        if not short_mode:
+            for filepath in resolved_files:
+                content = read_file_content(root_path, filepath, config['max_lines'], full_mode)
+                files_content.append((filepath, content))
+                
+        # 7. Format Output
+        formatter = FORMATTERS.get(parsed_args.format) or FORMATTERS['plain']
+        output_summary = None if short_mode else summary
+        output_text = formatter(stack_name, output_summary, tree_lines, files_content)
+        
+        # 8. Route Output
+        if parsed_args.clipboard:
+            success = copy_to_clipboard(output_text)
+            if success:
+                print("Output copied to clipboard.")
+            else:
+                print("Error: Could not copy to clipboard. Neither xclip nor xsel was found.", file=sys.stderr)
+                sys.exit(1)
+        elif parsed_args.output:
+            try:
+                with open(parsed_args.output, 'w', encoding='utf-8') as f:
+                    f.write(output_text)
+                print(f"Output written to {parsed_args.output}")
+            except Exception as e:
+                print(f"Error writing to file: {e}", file=sys.stderr)
+                sys.exit(1)
         else:
-            print("Error: Could not copy to clipboard. Neither xclip nor xsel was found.", file=sys.stderr)
-            sys.exit(1)
-    elif parsed_args.output:
-        try:
-            with open(parsed_args.output, 'w', encoding='utf-8') as f:
-                f.write(output_text)
-            print(f"Output written to {parsed_args.output}")
-        except Exception as e:
-            print(f"Error writing to file: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print(output_text)
+            print(output_text)
+
+    except PermissionError as e:
+        print(f"\n[Permission Error] Could not access files: {e}", file=sys.stderr)
+        print("Note: If you are running this from a Snap package, it cannot access hidden folders (like ~/.gemini or ~/.ssh) due to strict security confinement.", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
