@@ -1,6 +1,6 @@
 name: depicts
 base: core22
-version: '0.1.1'
+version: '0.1.2'
 summary: Summarize a software project for AI context.
 title: Depicts – project‑summary CLI
 description: |
@@ -13,6 +13,7 @@ website: https://github.com/bianchi-john/depicts
 source-code: https://github.com/bianchi-john/depicts
 issues: https://github.com/bianchi-john/depicts/issues
 donation: https://github.com/sponsors/bianchi-john
+icon: assets/app_banner.jpeg
 
 grade: stable
 confinement: strict
