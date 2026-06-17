@@ -1,10 +1,18 @@
 name: depicts
 base: core22
-version: '0.1.0'
+version: '0.1.1'
 summary: Summarize a software project for AI context.
+title: Depicts – project‑summary CLI
 description: |
   A Python CLI tool that summarizes a software project by outputting a directory tree
   and the contents of priority files. It helps provide instant context to AI assistants.
+
+contact: https://github.com/bianchi-john/depicts/discussions
+license: MIT
+website: https://github.com/bianchi-john/depicts
+source-code: https://github.com/bianchi-john/depicts
+issues: https://github.com/bianchi-john/depicts/issues
+donation: https://github.com/sponsors/bianchi-john
 
 grade: stable
 confinement: strict
