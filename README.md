@@ -37,6 +37,7 @@ Run without arguments to get an instant summary of the current directory.
 
 options:
   -h, --help            Show this help message and exit
+  --version             show program's version number and exit
 
 targeting:
   --path PATH           Path to the project root (default: current directory)
@@ -44,8 +45,9 @@ targeting:
 
 output:
   --output FILE         Write output to a file instead of stdout
-  --format {plain,md}   Output format: plain text with ASCII separators (default)
-                        or Markdown with fenced code blocks
+  --format {plain,md,json}
+                        Output format: plain text with ASCII separators (default)
+                        or Markdown with fenced code blocks or JSON
   --clipboard           Copy output to clipboard instead of printing to stdout
 
 verbosity:
@@ -55,8 +57,9 @@ verbosity:
   --no-content          Alias for --short
 
 filtering:
-  --exclude DIR         Exclude an additional directory (can be repeated, e.g.
-                        --exclude logs --exclude tmp)
+  --exclude DIR         Exclude an additional directory or path (can be repeated, e.g.
+                        --exclude logs --exclude src/tests)
+  --depth N             Max directory tree depth (default: 3)
 ```
 
 ## Configuration

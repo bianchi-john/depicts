@@ -16,6 +16,26 @@ from .formatters import FORMATTERS
 
 def copy_to_clipboard(text):
     """Attempt to copy text to clipboard using system utilities."""
+    # macOS
+    try:
+        p = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
+        p.communicate(input=text.encode('utf-8'))
+        if p.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
+
+    # Windows / WSL
+    try:
+        p = subprocess.Popen(['clip.exe'], stdin=subprocess.PIPE)
+        # Windows clip.exe often prefers utf-16le or local codepage, but utf-8 mostly works in modern WSL
+        p.communicate(input=text.encode('utf-8'))
+        if p.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
+
+    # Linux - xclip
     try:
         p = subprocess.Popen(['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE)
         p.communicate(input=text.encode('utf-8'))
@@ -24,6 +44,7 @@ def copy_to_clipboard(text):
     except FileNotFoundError:
         pass
         
+    # Linux - xsel
     try:
         p = subprocess.Popen(['xsel', '--clipboard', '--input'], stdin=subprocess.PIPE)
         p.communicate(input=text.encode('utf-8'))
@@ -35,6 +56,7 @@ def copy_to_clipboard(text):
     return False
 
 def main():
+    from . import __version__
     parser = argparse.ArgumentParser(
         description="Summarize a software project for AI context.\nRun without arguments to get an instant summary of the current directory.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -43,6 +65,7 @@ def main():
     
     options = parser.add_argument_group('options')
     options.add_argument('-h', '--help', action='help', help='Show this help message and exit')
+    options.add_argument('--version', action='version', version=f'depicts {__version__}')
     
     targeting = parser.add_argument_group('targeting')
     targeting.add_argument('--path', metavar='PATH', default='.', help='Path to the project root (default: current directory)')
@@ -50,7 +73,7 @@ def main():
     
     output = parser.add_argument_group('output')
     output.add_argument('--output', metavar='FILE', help='Write output to a file instead of stdout')
-    output.add_argument('--format', choices=['plain', 'md'], default='plain', help='Output format: plain text with ASCII separators (default)\nor Markdown with fenced code blocks')
+    output.add_argument('--format', choices=['plain', 'md', 'json'], default='plain', help='Output format: plain text with ASCII separators (default)\nor Markdown with fenced code blocks or JSON')
     output.add_argument('--clipboard', action='store_true', help='Copy output to clipboard instead of printing to stdout')
     
     verbosity = parser.add_argument_group('verbosity')
@@ -60,7 +83,9 @@ def main():
     verbosity.add_argument('--no-content', action='store_true', help='Alias for --short')
     
     filtering = parser.add_argument_group('filtering')
-    filtering.add_argument('--exclude', metavar='DIR', action='append', default=[], help='Exclude an additional directory (can be repeated, e.g.\n--exclude logs --exclude tmp)')
+    filtering.add_argument('--exclude', metavar='DIR', action='append', default=[], help='Exclude an additional directory or path (can be repeated, e.g.\n--exclude logs --exclude src/tests)')
+    filtering.add_argument('--depth', metavar='N', type=int, default=3, help='Max directory tree depth (default: 3)')
+
     
     parsed_args = parser.parse_args()
     
@@ -85,7 +110,7 @@ def main():
         stack_name, priority_patterns = detect_stack(root_path)
         
         # 3. Collect Directory Tree
-        tree_lines, all_files = build_tree_and_files(root_path, config['excludes'])
+        tree_lines, all_files = build_tree_and_files(root_path, config['excludes'], max_depth=parsed_args.depth)
         if not tree_lines:
             tree_lines = ["  (empty or inaccessible directory)"]
             
@@ -106,6 +131,15 @@ def main():
         formatter = FORMATTERS.get(parsed_args.format) or FORMATTERS['plain']
         output_summary = None if short_mode else summary
         output_text = formatter(stack_name, output_summary, tree_lines, files_content)
+        
+        if output_summary and not short_mode:
+            size_bytes = len(output_text.encode('utf-8'))
+            tokens = size_bytes // 4
+            kb = size_bytes / 1024
+            # We add it to the summary struct for formatters to use
+            summary['output_size'] = f"~{tokens:,} tokens ({kb:.1f} KB)"
+            # Re-format since we just added size
+            output_text = formatter(stack_name, output_summary, tree_lines, files_content)
         
         # 8. Route Output
         if parsed_args.clipboard:

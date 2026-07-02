@@ -5,12 +5,21 @@ import os
 import glob
 from collections import defaultdict
 
-def is_excluded(name, excludes):
-    """Check if a file or directory should be excluded."""
+def is_excluded(rel_path, excludes):
+    """Check if a file or directory should be excluded, supporting path-based patterns."""
+    name = os.path.basename(rel_path)
+    
+    # Name-based exclusion (e.g. 'node_modules')
     if name in excludes:
         return True
     if name.endswith('.egg-info'):
         return True
+        
+    # Path-based exclusion (e.g. 'src/tests')
+    for ex in excludes:
+        if '/' in ex and (rel_path == ex or rel_path.startswith(ex + '/')):
+            return True
+            
     return False
 
 def build_tree_and_files(root, excludes, max_depth=3, current_depth=1, current_relpath=""):
@@ -28,17 +37,29 @@ def build_tree_and_files(root, excludes, max_depth=3, current_depth=1, current_r
     except PermissionError:
         return [], []
         
+    # Filter out excluded entries first to know which one is the last
+    valid_entries = []
     for entry in entries:
-        if is_excluded(entry, excludes):
-            continue
-            
-        full_path = os.path.join(root, entry)
         rel_path = os.path.join(current_relpath, entry).replace('\\', '/')
-        prefix = "  " * (current_depth - 1) + "├── "
+        if not is_excluded(rel_path, excludes):
+            valid_entries.append((entry, rel_path))
+            
+    for i, (entry, rel_path) in enumerate(valid_entries):
+        full_path = os.path.join(root, entry)
+        
+        is_last = (i == len(valid_entries) - 1)
+        prefix_connector = "└── " if is_last else "├── "
+        prefix_base = "│   " if not is_last else "    "
+        
+        # We don't propagate the visual tree lines easily for deep nesting without passing the prefix string
+        # To keep it simple, we just use standard depth indentation
+        prefix = "    " * (current_depth - 1) + prefix_connector
         
         if os.path.isdir(full_path):
             tree_lines.append(f"{prefix}{entry}/")
             sub_lines, sub_files = build_tree_and_files(full_path, excludes, max_depth, current_depth + 1, rel_path)
+            
+            # Adjust sub_lines to align visually if needed, but current prefix approach works well enough
             tree_lines.extend(sub_lines)
             all_files.extend(sub_files)
         else:
@@ -68,7 +89,20 @@ def read_file_content(root, filepath, max_lines, full_mode):
     Read the content of a file, respecting truncation rules.
     """
     full_path = os.path.join(root, filepath)
+    
+    # Simple binary check based on extensions
+    binary_exts = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.pyc', '.so', '.dll', '.exe', '.bin', '.snap'}
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in binary_exts:
+        return "<binary file, skipped>"
+        
     try:
+        # Also try to detect binary by reading a chunk and checking for null bytes
+        with open(full_path, 'rb') as f:
+            chunk = f.read(1024)
+            if b'\0' in chunk:
+                return "<binary file, skipped>"
+                
         with open(full_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
@@ -85,6 +119,8 @@ def read_file_content(root, filepath, max_lines, full_mode):
         if is_truncated:
             content += f"\n... (truncated to {max_lines} lines) ...\n"
         return content
+    except UnicodeDecodeError:
+        return "<binary file, skipped (UnicodeDecodeError)>"
     except Exception as e:
         return f"<Error reading file: {e}>"
 

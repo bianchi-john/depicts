@@ -9,7 +9,10 @@ def format_md(stack, summary, tree, files_content):
         lines.append("## Summary")
         lines.append(f"- **Entry points:** {summary['entry_points']}")
         lines.append(f"- **Source files:** {summary['source_files']}")
-        lines.append(f"- **Config files:** {summary['config_files']}\n")
+        lines.append(f"- **Config files:** {summary['config_files']}")
+        if 'output_size' in summary:
+            lines.append(f"- **Output size:** {summary['output_size']}")
+        lines.append("")
         
     lines.append("## Directory Tree")
     lines.append("```")
