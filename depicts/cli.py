@@ -16,47 +16,24 @@ from .formatters import FORMATTERS
 
 def copy_to_clipboard(text):
     """Attempt to copy text to clipboard using system utilities."""
-    # macOS
-    try:
-        p = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
-        p.communicate(input=text.encode('utf-8'))
-        if p.returncode == 0:
-            return True
-    except FileNotFoundError:
-        pass
-
-    # Windows / WSL
-    try:
-        p = subprocess.Popen(['clip.exe'], stdin=subprocess.PIPE)
-        # Windows clip.exe often prefers utf-16le or local codepage, but utf-8 mostly works in modern WSL
-        p.communicate(input=text.encode('utf-8'))
-        if p.returncode == 0:
-            return True
-    except FileNotFoundError:
-        pass
-
-    # Linux - xclip
-    try:
-        p = subprocess.Popen(['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE)
-        p.communicate(input=text.encode('utf-8'))
-        if p.returncode == 0:
-            return True
-    except FileNotFoundError:
-        pass
-        
-    # Linux - xsel
-    try:
-        p = subprocess.Popen(['xsel', '--clipboard', '--input'], stdin=subprocess.PIPE)
-        p.communicate(input=text.encode('utf-8'))
-        if p.returncode == 0:
-            return True
-    except FileNotFoundError:
-        pass
-        
+    commands = [
+        ['pbcopy'],
+        ['clip.exe'],
+        ['xclip', '-selection', 'clipboard'],
+        ['xsel', '--clipboard', '--input']
+    ]
+    for cmd in commands:
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            p.communicate(input=text.encode('utf-8'))
+            if p.returncode == 0:
+                return True
+        except FileNotFoundError:
+            pass
     return False
 
-def main():
-    from . import __version__
+def build_argument_parser(version):
+    """Builds and returns the ArgumentParser for depicts CLI."""
     parser = argparse.ArgumentParser(
         description="Summarize a software project for AI context.\nRun without arguments to get an instant summary of the current directory.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -65,7 +42,7 @@ def main():
     
     options = parser.add_argument_group('options')
     options.add_argument('-h', '--help', action='help', help='Show this help message and exit')
-    options.add_argument('--version', action='version', version=f'depicts {__version__}')
+    options.add_argument('--version', action='version', version=f'depicts {version}')
     
     targeting = parser.add_argument_group('targeting')
     targeting.add_argument('--path', metavar='PATH', default='.', help='Path to the project root (default: current directory)')
@@ -85,14 +62,15 @@ def main():
     filtering = parser.add_argument_group('filtering')
     filtering.add_argument('--exclude', metavar='DIR', action='append', default=[], help='Exclude an additional directory or path (can be repeated, e.g.\n--exclude logs --exclude src/tests)')
     filtering.add_argument('--depth', metavar='N', type=int, default=3, help='Max directory tree depth (default: 3)')
+    
+    return parser
 
-    
-    parsed_args = parser.parse_args()
-    
+def run_pipeline(parsed_args):
+    """Orchestrates the represents process: config -> detect -> collect -> format -> output."""
     root_path = os.path.abspath(parsed_args.path)
     if not os.path.isdir(root_path):
         print(f"Error: Path '{root_path}' is not a directory.", file=sys.stderr)
-        sys.exit(1)
+        return 1
         
     try:
         # 1. Config Loading
@@ -110,12 +88,23 @@ def main():
         stack_name, priority_patterns = detect_stack(root_path)
         
         # 3. Collect Directory Tree
-        tree_lines, all_files = build_tree_and_files(root_path, config['excludes'], max_depth=parsed_args.depth)
+        tree_lines, all_files = build_tree_and_files(
+            root_path, 
+            config['excludes'], 
+            max_depth=parsed_args.depth,
+            gitignore_rules=config.get('gitignore_rules')
+        )
         if not tree_lines:
             tree_lines = ["  (empty or inaccessible directory)"]
             
         # 4. Resolve Priority Files
-        resolved_files = resolve_priority_files(root_path, priority_patterns, config['force_includes'])
+        resolved_files = resolve_priority_files(
+            root_path, 
+            priority_patterns, 
+            config['force_includes'],
+            config['excludes'],
+            config.get('gitignore_rules')
+        )
         
         # 5. Generate Summary
         summary = generate_summary(all_files, resolved_files)
@@ -147,8 +136,8 @@ def main():
             if success:
                 print("Output copied to clipboard.")
             else:
-                print("Error: Could not copy to clipboard. Neither xclip nor xsel was found.", file=sys.stderr)
-                sys.exit(1)
+                print("Error: Could not copy to clipboard. Neither xclip, xsel, pbcopy, nor clip.exe was found.", file=sys.stderr)
+                return 1
         elif parsed_args.output:
             try:
                 with open(parsed_args.output, 'w', encoding='utf-8') as f:
@@ -156,14 +145,21 @@ def main():
                 print(f"Output written to {parsed_args.output}")
             except Exception as e:
                 print(f"Error writing to file: {e}", file=sys.stderr)
-                sys.exit(1)
+                return 1
         else:
             print(output_text)
+        return 0
 
     except PermissionError as e:
         print(f"\n[Permission Error] Could not access files: {e}", file=sys.stderr)
         print("Note: If you are running this from a Snap package, it cannot access hidden folders (like ~/.gemini or ~/.ssh) due to strict security confinement.", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+def main():
+    from . import __version__
+    parser = build_argument_parser(__version__)
+    parsed_args = parser.parse_args()
+    sys.exit(run_pipeline(parsed_args))
 
 if __name__ == '__main__':
     main()

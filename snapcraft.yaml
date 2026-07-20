@@ -1,6 +1,6 @@
 name: depicts
 base: core22
-version: '0.2.0'
+version: '0.2.1'
 summary: Summarize a software project for AI context.
 title: Depicts – project‑summary CLI
 description: |
