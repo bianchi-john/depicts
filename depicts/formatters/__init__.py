@@ -1,9 +1,9 @@
 """
 Registry for output formatters.
 """
-from .plain import format_plain
-from .markdown import format_md
 from .json_out import format_json
+from .markdown import format_md
+from .plain import format_plain
 
 FORMATTERS = {
     'plain': format_plain,

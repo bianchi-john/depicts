@@ -1,19 +1,25 @@
 # Example configuration for depicts
 # Save this file as .depicts.yml in the root of your project to override default behavior.
+# Invalid values are reported as warnings and ignored.
 
-# Additional directories to exclude from the directory tree and file collection.
-# Default excludes include: .git, __pycache__, node_modules, .venv, dist, build, .idea, .vscode
+# Additional directories, files or glob patterns to exclude from the tree and from file collection.
+# A name without "/" (e.g. "logs", "*.log") matches at any depth; a path (e.g. "src/fixtures") is
+# relative to the project root.
+# Always excluded: .git, __pycache__, node_modules, .venv, dist, build, *.egg-info, .idea, .vscode,
+# plus everything matched by your .gitignore files.
 exclude_dirs:
   - logs
   - tmp
   - coverage
 
-# The maximum number of lines to show for each priority file (default: 150).
-# Files under 200 lines are shown in full by default unless this is set lower.
+# Maximum number of lines to show for each file.
+# Without this setting, files up to 200 lines are shown in full and longer ones are cut to 150 lines.
+# When set, it is a hard limit for every file (README files get twice as many lines).
 max_lines: 150
 
-# Extra files or glob patterns to always include in the output,
-# regardless of the detected stack.
+# Extra files or glob patterns to always include, relative to the project root.
+# "*" does not cross "/"; use "**/" to match at any depth (e.g. "**/*.proto").
+# Paths outside the project (absolute, "..", "~") are rejected.
 extra_files:
   - "docs/architecture.md"
   - "scripts/*.sh"

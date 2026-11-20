@@ -1,6 +1,8 @@
 name: depicts
 base: core22
-version: '0.2.1'
+# The version is read from depicts/__init__.py at build time (see override-pull),
+# so it is defined in one place only.
+adopt-info: depicts
 summary: Summarize a software project for AI context.
 title: Depicts – project‑summary CLI
 description: |
@@ -13,7 +15,8 @@ website: https://github.com/bianchi-john/depicts
 source-code: https://github.com/bianchi-john/depicts
 issues: https://github.com/bianchi-john/depicts/issues
 donation: https://github.com/sponsors/bianchi-john
-icon: assets/app_banner.jpeg
+# The store icon must be a square PNG/SVG (max 512x512); the banner is for the listing page.
+icon: icon/icon-512.png
 
 grade: stable
 confinement: strict
@@ -31,8 +34,11 @@ parts:
   depicts:
     plugin: python
     source: .
-    python-packages:
-      - PyYAML
+    # Python dependencies come from pyproject.toml.
+    override-pull: |
+      craftctl default
+      craftctl set version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' depicts/__init__.py)"
     stage-packages:
+      - wl-clipboard
       - xclip
       - xsel

@@ -1,27 +1,19 @@
-def format_plain(stack, summary, tree, files_content):
-    lines = []
-    lines.append("════════════════════════════════")
-    lines.append(f" STACK: {stack}")
-    lines.append("════════════════════════════════")
-    
-    if summary:
+SEPARATOR = "═" * 32
+
+
+def format_plain(report):
+    lines = [SEPARATOR, f" STACK: {report.stack}", SEPARATOR]
+
+    if report.summary:
         lines.append("[SUMMARY]")
-        lines.append(f"Entry points : {summary['entry_points']}")
-        lines.append(f"Source files : {summary['source_files']}")
-        lines.append(f"Config files : {summary['config_files']}")
-        if 'output_size' in summary:
-            lines.append(f"Output size  : {summary['output_size']}")
-        lines.append("════════════════════════════════")
-        
+        lines.extend(f"{label:<12} : {value}" for label, value in report.summary.rows())
+        lines.append(SEPARATOR)
+
     lines.append("[DIRECTORY TREE]")
-    lines.extend(tree)
+    lines.extend(report.tree)
     lines.append("")
-    
-    for filepath, content in files_content:
-        lines.append(f"════════════════════════════════")
-        lines.append(f"[FILE: {filepath}]")
-        lines.append(f"════════════════════════════════")
-        lines.append(content)
-        lines.append("")
-        
+
+    for entry in report.files:
+        lines += [SEPARATOR, f"[FILE: {entry.path}]", SEPARATOR, entry.body(), ""]
+
     return "\n".join(lines)

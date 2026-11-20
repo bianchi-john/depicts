@@ -1,246 +1,287 @@
 """
-File collection and summary generation.
+Directory scanning, file selection, file reading and summary generation.
 """
+from __future__ import annotations
+
 import os
-import glob
-import fnmatch
-from collections import defaultdict
+import stat
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
-def matches_gitignore(rel_path, gitignore_rules, is_dir):
-    """
-    Check if rel_path (relative to root) matches any rule in gitignore_rules.
-    gitignore_rules is a list of tuples: (pattern, is_dir_only, is_anchored)
-    """
-    if not gitignore_rules:
-        return False
-        
-    for pattern, is_dir_only, is_anchored in gitignore_rules:
-        if is_dir_only and not is_dir:
-            continue
-            
-        # Match anchored patterns (must match from the start of rel_path)
-        if is_anchored:
-            if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(rel_path, pattern + '/*'):
-                return True
-        else:
-            # Unanchored patterns match any path segment or suffix
-            parts = rel_path.split('/')
-            for i in range(len(parts)):
-                subpath = '/'.join(parts[i:])
-                if fnmatch.fnmatch(subpath, pattern) or fnmatch.fnmatch(subpath, pattern + '/*'):
-                    return True
-                if fnmatch.fnmatch(parts[i], pattern):
-                    return True
-    return False
+from . import patterns
+from .ignore import ExcludeMatcher, GitIgnore
+from .models import FileEntry, FileRef, Summary, plural
 
-def is_excluded(rel_path, excludes, gitignore_rules=None, is_dir=False):
-    """Check if a file or directory should be excluded, supporting path-based patterns and gitignore."""
-    parts = rel_path.split('/')
-    
-    # Name-based exclusion (e.g. if any segment matches excludes, like 'node_modules')
-    for part in parts:
-        if part in excludes:
-            return True
-        if part.endswith('.egg-info'):
-            return True
-        
-    # Path-based exclusion (e.g. 'src/tests')
-    for ex in excludes:
-        if '/' in ex:
-            if rel_path == ex or rel_path.startswith(ex + '/'):
-                return True
-            
-    # Gitignore matching
-    if gitignore_rules and matches_gitignore(rel_path, gitignore_rules, is_dir):
-        return True
-            
-    return False
+# Directory entries listed per directory in the tree before collapsing the rest.
+MAX_TREE_ENTRIES = 50
+MAX_FILE_SIZE = 10 * 1024 * 1024
+# README files are the best single source of context, so they get a larger budget.
+README_LINE_FACTOR = 2
 
-def build_tree_and_files(root, excludes, max_depth=3, current_depth=1, current_relpath="", gitignore_rules=None):
-    """
-    Traverse the directory tree up to max_depth.
-    Returns (tree_lines, list_of_all_relative_file_paths_found).
-    """
-    if current_depth > max_depth:
-        return [], []
-    
-    tree_lines = []
-    all_files = []
+BINARY_EXTENSIONS = {
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.pdf', '.zip', '.tar', '.gz', '.bz2', '.xz',
+    '.7z', '.pyc', '.so', '.dll', '.dylib', '.exe', '.bin', '.snap', '.class', '.jar', '.whl',
+    '.woff', '.woff2', '.ttf', '.otf', '.mp3', '.mp4', '.mov', '.sqlite', '.db',
+}
+
+# Files whose content is never included unless the user names them with --file.
+SENSITIVE_PATTERNS = (
+    '.env', '.env.*', '*.pem', '*.key', '*.p12', '*.pfx', '*.keystore', '*.jks',
+    'id_rsa*', 'id_dsa*', 'id_ecdsa*', 'id_ed25519*', '.npmrc', '.pypirc', '.netrc',
+    'credentials', 'credentials.json', '.htpasswd',
+)
+SENSITIVE_ALLOWED = ('.env.example', '.env.sample', '.env.template', '*.pub')
+
+ENTRY_POINT_NAMES = {
+    'main.py', '__main__.py', 'app.py', 'wsgi.py', 'asgi.py', 'manage.py',
+    'index.js', 'index.ts', 'index.mjs', 'main.js', 'main.ts', 'server.js', 'server.ts',
+    'main.rs', 'main.go',
+}
+CONFIG_NAMES = {
+    'pyproject.toml', 'setup.py', 'setup.cfg', 'requirements.txt', 'Pipfile',
+    'package.json', 'tsconfig.json', 'Cargo.toml', 'go.mod', 'Makefile',
+    'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml', 'Chart.yaml',
+}
+# Entry points and config files deeper than this many directories are not listed
+# (otherwise every components/*/index.js would count as an entry point).
+SUMMARY_MAX_DEPTH = 2
+SOURCE_EXTENSIONS = {
+    '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.rs', '.go', '.java', '.kt', '.scala', '.swift',
+    '.c', '.h', '.cc', '.cpp', '.hpp', '.cs', '.rb', '.php', '.sh',
+}
+
+
+# --------------------------------------------------------------------------- scan
+
+@dataclass
+class ScanResult:
+    tree: list[str]
+    files: list[str]  # every non-excluded file, at any depth, relative to the root
+
+
+def _entry_kind(entry: os.DirEntry) -> str:
+    """'dir', 'dir_link' (symlink to a directory) or 'file'."""
     try:
-        entries = sorted(os.listdir(root))
-    except PermissionError:
-        return [], []
-        
-    # Filter out excluded entries first to know which one is the last
-    valid_entries = []
-    for entry in entries:
-        rel_path = os.path.join(current_relpath, entry).replace('\\', '/')
-        is_dir = os.path.isdir(os.path.join(root, entry))
-        if not is_excluded(rel_path, excludes, gitignore_rules, is_dir):
-            valid_entries.append((entry, rel_path, is_dir))
-            
-    for i, (entry, rel_path, is_dir) in enumerate(valid_entries):
-        full_path = os.path.join(root, entry)
-        
-        is_last = (i == len(valid_entries) - 1)
-        prefix_connector = "└── " if is_last else "├── "
-        
-        prefix = "    " * (current_depth - 1) + prefix_connector
-        
-        if is_dir:
-            tree_lines.append(f"{prefix}{entry}/")
-            sub_lines, sub_files = build_tree_and_files(
-                full_path, excludes, max_depth, current_depth + 1, rel_path, gitignore_rules
-            )
-            tree_lines.extend(sub_lines)
-            all_files.extend(sub_files)
-        else:
-            tree_lines.append(f"{prefix}{entry}")
-            all_files.append(rel_path)
-            
-    return tree_lines, all_files
+        if entry.is_symlink():
+            return 'dir_link' if entry.is_dir() else 'file'
+        return 'dir' if entry.is_dir(follow_symlinks=False) else 'file'
+    except OSError:
+        return 'file'
 
-def get_all_non_excluded_files(root, excludes, gitignore_rules=None):
+
+def scan_project(root: str, excludes, max_depth: int = 3) -> ScanResult:
+    """Walk the project once.
+
+    Builds the directory tree (``max_depth`` levels) and the list of all
+    non-excluded files (no depth limit). Symbolic links to directories are
+    shown but never followed, so link cycles and links to large external
+    directories cannot blow up the scan. Raises ``OSError`` if the root itself
+    cannot be listed.
     """
-    Recursively find all files under root, skipping excluded directories.
-    Returns relative paths.
-    """
-    all_files = []
-    
-    def _walk(current_dir, current_relpath):
-        try:
-            entries = os.listdir(current_dir)
-        except PermissionError:
-            return
-            
+    matcher = ExcludeMatcher(excludes)
+    files: list[str] = []
+
+    def walk(abs_dir: str, rel_dir: str, depth: int, prefix: str, render: bool, ignore: GitIgnore):
+        ignore = ignore.descend(abs_dir, rel_dir)
+        with os.scandir(abs_dir) as it:
+            entries = sorted(it, key=lambda e: e.name)
+
+        visible = []
         for entry in entries:
-            rel_path = os.path.join(current_relpath, entry).replace('\\', '/')
-            full_path = os.path.join(current_dir, entry)
-            is_dir = os.path.isdir(full_path)
-            
-            if is_excluded(rel_path, excludes, gitignore_rules, is_dir):
+            rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+            kind = _entry_kind(entry)
+            if matcher.matches(rel) or ignore.is_ignored(rel, kind == 'dir'):
                 continue
-                
-            if is_dir:
-                _walk(full_path, rel_path)
+            visible.append((entry, rel, kind))
+
+        render = render and depth <= max_depth
+        shown = min(len(visible), MAX_TREE_ENTRIES)
+        hidden = len(visible) - shown
+        lines: list[str] = []
+        count = 0
+        for i, (entry, rel, kind) in enumerate(visible):
+            in_view = render and i < shown
+            is_last = i == shown - 1 and hidden == 0
+            connector = "└── " if is_last else "├── "
+            if kind == 'dir':
+                note = ""
+                try:
+                    sub_lines, sub_count = walk(
+                        entry.path, rel, depth + 1, prefix + ("    " if is_last else "│   "), in_view, ignore
+                    )
+                except OSError:
+                    sub_lines, sub_count, note = [], 0, " (unreadable)"
+                count += sub_count
+                if in_view:
+                    if depth == max_depth and sub_count:
+                        note = f" ({plural(sub_count, 'file')})"
+                    lines.append(f"{prefix}{connector}{entry.name}/{note}")
+                    lines.extend(sub_lines)
+            elif kind == 'dir_link':
+                if in_view:
+                    lines.append(f"{prefix}{connector}{entry.name}/ (symlink, not followed)")
             else:
-                all_files.append(rel_path)
-                
-    _walk(root, "")
-    return all_files
+                files.append(rel)
+                count += 1
+                if in_view:
+                    lines.append(f"{prefix}{connector}{entry.name}")
+        if render and hidden:
+            lines.append(f"{prefix}└── … (+{hidden} more {'entry' if hidden == 1 else 'entries'})")
+        return lines, count
 
-def resolve_priority_files(root, priority_patterns, force_includes, excludes, gitignore_rules=None):
-    """
-    Resolve priority files by matching patterns against non-excluded files.
-    """
-    resolved_files = set()
-    patterns_to_check = priority_patterns + force_includes
-    
-    if not patterns_to_check:
-        return []
-        
-    all_non_excluded = get_all_non_excluded_files(root, excludes, gitignore_rules)
-    
-    for pattern in patterns_to_check:
-        # Standardize pattern path separators
-        pattern = pattern.replace('\\', '/')
-        
-        for rel_path in all_non_excluded:
-            if fnmatch.fnmatch(rel_path, pattern):
-                resolved_files.add(rel_path)
-            elif fnmatch.fnmatch(os.path.basename(rel_path), pattern):
-                # Allow matching by base name if pattern has no slashes, e.g. "*.py"
-                if '/' not in pattern:
-                    resolved_files.add(rel_path)
-                    
-    # Also handle literal files that might be outside excludes but forced
-    for pattern in force_includes:
-        pattern = pattern.replace('\\', '/')
-        full_path = os.path.join(root, pattern)
-        if os.path.isfile(full_path):
-            rel_path = os.path.relpath(full_path, root).replace('\\', '/')
-            resolved_files.add(rel_path)
-            
-    return sorted(list(resolved_files))
+    root = os.path.abspath(root)
+    tree, _ = walk(root, "", 1, "", True, GitIgnore.for_root(root))
+    return ScanResult(tree=tree, files=files)
 
-def read_file_content(root, filepath, max_lines, full_mode):
-    """
-    Read the content of a file, respecting truncation rules, and protecting against OOM.
-    """
-    full_path = os.path.join(root, filepath)
-    
-    # Simple binary check based on extensions
-    binary_exts = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.pyc', '.so', '.dll', '.exe', '.bin', '.snap'}
-    ext = os.path.splitext(filepath)[1].lower()
-    if ext in binary_exts:
-        return "<binary file, skipped>"
-        
-    try:
-        # Protect against opening huge files
-        file_size = os.path.getsize(full_path)
-        if file_size > 10 * 1024 * 1024:  # 10 MB limit
-            return "<file too large, skipped (>10MB)>"
 
-        # Also try to detect binary by reading a chunk and checking for null bytes
-        with open(full_path, 'rb') as f:
-            chunk = f.read(1024)
-            if b'\0' in chunk:
-                return "<binary file, skipped>"
-                
-        is_readme = os.path.basename(filepath).lower().startswith('readme')
-        
-        lines = []
-        is_truncated = False
-        
-        limit = None
-        if not full_mode and not is_readme:
-            limit = max(201, max_lines + 1)
-            
-        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                lines.append(line)
-                if limit and len(lines) >= limit:
-                    is_truncated = True
-                    break
-                    
-        if is_truncated and len(lines) > max_lines:
-            lines = lines[:max_lines]
-            content = "".join(lines)
-            content += f"\n... (truncated to {max_lines} lines) ...\n"
+# ------------------------------------------------------------------ file selection
+
+def resolve_files(root, scanned_files, priority_patterns, extra_files=(), cli_files=()) -> list[FileRef]:
+    """Select the files whose content goes into the output.
+
+    * ``priority_patterns`` (from the detectors) and ``extra_files`` (from
+      ``.depicts.yml``) only match files inside the project. ``extra_files``
+      entries that point outside it (absolute paths, ``..``, ``~``) are
+      rejected: a cloned repository must not be able to make depicts read
+      files elsewhere on the machine.
+    * ``cli_files`` (``--file``) are trusted: a literal path may point anywhere.
+
+    A literal path that names an existing file is included even if it is
+    excluded from the tree. Patterns follow ``depicts.patterns`` semantics.
+    """
+    root = os.path.abspath(root)
+    selected: dict[str, bool] = {}
+
+    def add(rel_path: str, explicit: bool) -> None:
+        selected[rel_path] = selected.get(rel_path, False) or explicit
+
+    def add_matches(pattern: str, explicit: bool) -> None:
+        for rel_path in scanned_files:
+            if patterns.match(pattern, rel_path):
+                add(rel_path, explicit)
+
+    for pattern in priority_patterns:
+        add_matches(pattern, explicit=False)
+
+    for pattern in extra_files:
+        if patterns.escapes_root(pattern):
+            print(f"Warning: ignoring extra_files entry {pattern!r} in .depicts.yml: "
+                  "it points outside the project.", file=sys.stderr)
+            continue
+        add_matches(pattern, explicit=False)
+        literal = patterns.normalize(pattern)
+        if os.path.isfile(os.path.join(root, literal)):
+            add(literal, explicit=False)
+
+    for pattern in cli_files:
+        candidate = os.path.expanduser(pattern)
+        if os.path.isabs(candidate):
+            candidate = os.path.normpath(candidate)
         else:
-            content = "".join(lines)
-            
-        return content
-    except UnicodeDecodeError:
-        return "<binary file, skipped (UnicodeDecodeError)>"
-    except Exception as e:
-        return f"<Error reading file: {e}>"
+            add_matches(pattern, explicit=True)
+            candidate = os.path.normpath(os.path.join(root, candidate))
+        if os.path.isfile(candidate):
+            add(os.path.relpath(candidate, root).replace('\\', '/'), explicit=True)
 
-def generate_summary(all_files, resolved_files):
+    return [FileRef(path, explicit) for path, explicit in sorted(selected.items())]
+
+
+# ------------------------------------------------------------------- file reading
+
+def _is_inside(root_real: str, path: str) -> bool:
+    real = os.path.realpath(path)
+    try:
+        return os.path.commonpath([root_real, real]) == root_real
+    except ValueError:  # different drives on Windows
+        return False
+
+
+def is_sensitive(rel_path: str) -> bool:
+    name = rel_path.rsplit('/', 1)[-1]
+    if any(fnmatchcase(name, p) for p in SENSITIVE_ALLOWED):
+        return False
+    return any(fnmatchcase(name, p) for p in SENSITIVE_PATTERNS)
+
+
+def read_file(root: str, ref: FileRef, max_lines: int, threshold: int, full_mode: bool = False) -> FileEntry:
+    """Read a selected file.
+
+    Files longer than ``threshold`` lines are cut to ``max_lines`` (README
+    files get ``README_LINE_FACTOR`` times both values); ``full_mode``
+    disables truncation. Binary, oversized, sensitive and out-of-project files
+    are reported as skipped instead of being read.
     """
-    Generates summary statistics: Entry points, Source files, Config files.
-    """
-    entry_patterns = {'main.py', 'app.py', 'wsgi.py', 'manage.py', 'index.js', 'index.ts', 'main.rs', 'main.go'}
-    config_patterns = {'pyproject.toml', 'setup.py', 'requirements.txt', 'package.json', 'Cargo.toml', 'go.mod', 'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml'}
-    
-    check_files = set(all_files).union(resolved_files)
-    
-    entry_points = sorted([f for f in check_files if any(f.endswith(p) or f.endswith("/" + p) for p in entry_patterns)])
-    config_files = sorted([f for f in check_files if any(f == p or f.endswith("/" + p) for p in config_patterns)])
-    
-    source_exts = {'.py', '.js', '.ts', '.rs', '.go', '.java', '.cpp', '.c', '.h', '.rb', '.php'}
-    source_files_by_ext = defaultdict(int)
-    for f in all_files:
-        ext = os.path.splitext(f)[1]
-        if ext in source_exts:
-            source_files_by_ext[ext] += 1
-            
-    source_str = ", ".join(f"{count} {ext} files" for ext, count in source_files_by_ext.items())
-    if not source_str:
-        source_str = "None detected"
-        
-    return {
-        'entry_points': ", ".join(entry_points) if entry_points else "None detected",
-        'source_files': source_str,
-        'config_files': ", ".join(config_files) if config_files else "None detected"
-    }
+    entry = FileEntry(path=ref.path)
+    full_path = os.path.normpath(os.path.join(root, ref.path))
+
+    if not ref.explicit:
+        if not _is_inside(os.path.realpath(root), full_path):
+            entry.skipped = "symlink pointing outside the project"
+            return entry
+        if is_sensitive(ref.path):
+            entry.skipped = "may contain secrets (name it with --file to include it)"
+            return entry
+    if os.path.splitext(ref.path)[1].lower() in BINARY_EXTENSIONS:
+        entry.skipped = "binary file"
+        return entry
+
+    try:
+        st = os.stat(full_path)
+        if not stat.S_ISREG(st.st_mode):
+            entry.skipped = "not a regular file"
+            return entry
+        if st.st_size > MAX_FILE_SIZE:
+            entry.skipped = f"file too large (>{MAX_FILE_SIZE // (1024 * 1024)} MB)"
+            return entry
+        with open(full_path, 'rb') as f:
+            if b'\0' in f.read(8192):
+                entry.skipped = "binary file"
+                return entry
+
+        if os.path.basename(ref.path).lower().startswith('readme'):
+            max_lines *= README_LINE_FACTOR
+            threshold *= README_LINE_FACTOR
+
+        kept: list[str] = []
+        total = 0
+        with open(full_path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                total += 1
+                if full_mode or total <= threshold:
+                    kept.append(line)
+    except OSError as e:
+        entry.skipped = f"could not read file: {e.strerror or e}"
+        return entry
+
+    if not full_mode and total > threshold:
+        entry.content = "".join(kept[:max_lines])
+        entry.truncated = True
+        entry.shown_lines = min(max_lines, total)
+        entry.total_lines = total
+    else:
+        entry.content = "".join(kept)
+        entry.shown_lines = entry.total_lines = total
+    return entry
+
+
+# ------------------------------------------------------------------------ summary
+
+def _shallow_matches(files, names) -> list[str]:
+    return sorted(
+        f for f in files
+        if f.rsplit('/', 1)[-1] in names and f.count('/') <= SUMMARY_MAX_DEPTH
+    )
+
+
+def build_summary(files) -> Summary:
+    """Entry points, config files and source-file counts for the whole project."""
+    counts = Counter(
+        ext for ext in (os.path.splitext(f)[1] for f in files) if ext in SOURCE_EXTENSIONS
+    )
+    return Summary(
+        entry_points=_shallow_matches(files, ENTRY_POINT_NAMES),
+        source_files=dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        config_files=_shallow_matches(files, CONFIG_NAMES),
+    )

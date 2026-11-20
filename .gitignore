@@ -1,3 +1,20 @@
-*.snap
+# Python
 __pycache__/
-depicts.egg-info/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Snapcraft
+*.snap
+parts/
+stage/
+prime/
